@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # Our PostgreSQL Database Service
+  postgres:
+    image: postgres:15-alpine
+    container_name: inlab_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inlab_db
+      POSTGRES_USER: inlab_user
+      POSTGRES_PASSWORD: inlab_password
+    ports:
+      - "5432:5432" # Expose to host machine for external tools (optional)
+    volumes:
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - inlab_network
+    # Health check is good practice for services that depend on each other
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inlab_user -d inlab_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Our Node.js Backend API Service
+  api:
+    build: ./backend # Tells Compose to build the image using the Dockerfile in this path
+    container_name: inlab_api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # Update DB_HOST to use the service name! This is Docker's internal DNS.
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=inlab_db
+      - DB_USER=inlab_user
+      - DB_PASSWORD=inlab_password
+      - PORT=3001
+      - JWT_SECRET=inlab_super_secret_jwt_key_change_in_production_123!
+    ports:
+      - "3001:3001" # Map host port 3001 to container port 3001
+    depends_on:
+      postgres:
+        condition: service_healthy # Wait for the DB to be healthy before starting the app
+    #volumes:
+      # Optional: Mount the source code for development with live reload.
+      # For now, we'll use the built image. We can add this later for development.
+      # - ./backend/src:/app/src
+    networks:
+      - inlab_network
+    # Use nodemon for development instead of 'npm start'
+    # command: npm run dev
+
+volumes:
+  postgres_data:
+
+networks:
+  inlab_network:
+    driver: bridge

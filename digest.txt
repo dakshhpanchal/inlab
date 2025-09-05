@@ -321,14 +321,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  flutter_web_auth:
-    dependency: "direct main"
-    description:
-      name: flutter_web_auth
-      sha256: "95e4856e24fb6ac1678f5ff334743b63f782d839ab324543d29ccbd295176209"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.6.0"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
@@ -489,12 +481,11 @@ packages:
   qr_code_scanner:
     dependency: "direct main"
     description:
-      path: "."
-      ref: master
-      resolved-ref: "86b7ca33af56e1dab07179f3a3a03784310ed65c"
-      url: "https://github.com/juliuscanute/qr_code_scanner.git"
-    source: git
-    version: "1.0.0"
+      name: qr_code_scanner
+      sha256: f23b68d893505a424f0bd2e324ebea71ed88465d572d26bb8d2e78a4749591fd
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.1"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -645,11 +636,12 @@ sdks:
 ================================================
 FILE: frontend/pubspec.yaml
 ================================================
-name: inlab
-description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
-publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+name: inlab
+description: A new Flutter project.
+publish_to: 'none'
+# Remove this line if you wish to publish to pub.dev
 
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
@@ -680,7 +672,6 @@ dependencies:
   qr_code_scanner: ^1.0.0
   sqflite: ^2.0.0+4
   path_provider: ^2.0.15
-  flutter_web_auth: ^0.6.0
   http: ^1.1.0
 
   # The following adds the Cupertino Icons font to your application.
@@ -736,14 +727,6 @@ flutter:
   #       - asset: fonts/TrajanPro.ttf
   #       - asset: fonts/TrajanPro_Bold.ttf
   #         weight: 700
-  #
-  # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
-dependency_overrides:
-  qr_code_scanner:
-    git:
-      url: https://github.com/juliuscanute/qr_code_scanner.git
-      ref: master
 
 
 ================================================
@@ -907,10 +890,15 @@ FILE: frontend/android/app/src/debug/AndroidManifest.xml
 FILE: frontend/android/app/src/main/AndroidManifest.xml
 ================================================
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    
     <application
         android:label="inlab"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"> <!-- Add this for HTTP -->
+        
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -920,38 +908,18 @@ FILE: frontend/android/app/src/main/AndroidManifest.xml
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
-            <meta-data
-              android:name="io.flutter.embedding.android.NormalTheme"
-              android:resource="@style/NormalTheme"
-              />
+            
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-    <!-- Required to query activities that can process text, see:
-         https://developer.android.com/training/package-visibility and
-         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
-
-         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT"/>
-            <data android:mimeType="text/plain"/>
-        </intent>
-    </queries>
-</manifest>
-
+</manifest> 
 
 
 ================================================
@@ -974,11 +942,6 @@ import io.flutter.embedding.engine.FlutterEngine;
 public final class GeneratedPluginRegistrant {
   private static final String TAG = "GeneratedPluginRegistrant";
   public static void registerWith(@NonNull FlutterEngine flutterEngine) {
-    try {
-      flutterEngine.getPlugins().add(new com.linusu.flutter_web_auth.FlutterWebAuthPlugin());
-    } catch (Exception e) {
-      Log.e(TAG, "Error registering plugin flutter_web_auth, com.linusu.flutter_web_auth.FlutterWebAuthPlugin", e);
-    }
     try {
       flutterEngine.getPlugins().add(new io.flutter.plugins.pathprovider.PathProviderPlugin());
     } catch (Exception e) {
@@ -1512,64 +1475,31 @@ import 'package:flutter/material.dart';
 import 'qr_scan_screen.dart';
 
 class HomeScreen extends StatelessWidget {
-  final String username;
-  final String avatarUrl;
-
-  const HomeScreen({super.key, required this.username, required this.avatarUrl});
+  const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('InLab Dashboard')),
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
+      appBar: AppBar(title: const Text('InLab Home')),
+      body: Center(
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // User info
-            Row(
-              children: [
-                CircleAvatar(
-                  radius: 30,
-                  backgroundImage: NetworkImage(avatarUrl),
-                ),
-                const SizedBox(width: 20),
-                Text(
-                  'Hello, $username!',
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            const SizedBox(height: 40),
-            // Buttons
-            ElevatedButton.icon(
-              icon: const Icon(Icons.qr_code_scanner, size: 30),
-              label: const Text('Scan QR', style: TextStyle(fontSize: 20)),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 60),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
+            ElevatedButton(
               onPressed: () {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (context) => const QRScanScreen()),
                 );
               },
+              child: const Text('Scan QR'),
             ),
             const SizedBox(height: 20),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.history, size: 30),
-              label: const Text('View Attendance', style: TextStyle(fontSize: 20)),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 60),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
+            ElevatedButton(
               onPressed: () {
-                // TODO: Navigate to attendance history screen
+                // TODO: View Attendance
               },
+              child: const Text('View Attendance'),
             ),
           ],
         ),
@@ -1584,7 +1514,6 @@ class HomeScreen extends StatelessWidget {
 FILE: frontend/lib/login_screen.dart
 ================================================
 import 'package:flutter/material.dart';
-import 'home_screen.dart';
 
 class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
@@ -1593,40 +1522,12 @@ class LoginScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text(
-                'Welcome to InLab',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 40),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.login),
-                label: const Text('Login with GitHub', style: TextStyle(fontSize: 18)),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 50),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                onPressed: () {
-                  // For now, pass dummy user info
-                  Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const HomeScreen(
-                        username: 'Daksh',
-                        avatarUrl: 'https://avatars.githubusercontent.com/u/9919?v=4',
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
+        child: ElevatedButton(
+          onPressed: () {
+            // TODO: add GitHub login later
+            Navigator.pushReplacementNamed(context, '/home'); // for now just navigate
+          },
+          child: const Text('Login with GitHub'),
         ),
       ),
     );
@@ -1655,10 +1556,7 @@ class InLabApp extends StatelessWidget {
       initialRoute: '/',
       routes: {
         '/': (context) => const LoginScreen(),
-        '/home': (context) => const HomeScreen(
-              username: 'User',
-              avatarUrl: 'https://avatars.githubusercontent.com/u/9919?v=4',
-            ),
+        '/home': (context) => const HomeScreen(),
       },
     );
   }
@@ -2266,12 +2164,10 @@ FILE: frontend/macos/Flutter/GeneratedPluginRegistrant.swift
 import FlutterMacOS
 import Foundation
 
-import flutter_web_auth
 import path_provider_foundation
 import sqflite_darwin
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
-  FlutterWebAuthPlugin.register(with: registry.registrar(forPlugin: "FlutterWebAuthPlugin"))
   PathProviderPlugin.register(with: registry.registrar(forPlugin: "PathProviderPlugin"))
   SqflitePlugin.register(with: registry.registrar(forPlugin: "SqflitePlugin"))
 }
