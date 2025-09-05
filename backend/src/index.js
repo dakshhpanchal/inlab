@@ -16,7 +16,8 @@ app.use(express.json());
 
 // CORS - Allow requests from our Flutter frontend (will run on various ports)
 app.use(cors({
-  origin: true, // Allow requests from any origin during development
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'HEAD'], // Allow requests from any origin during development
   credentials: true // Allow cookies/session to be sent
 }));
 
