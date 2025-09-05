@@ -84,3 +84,4 @@ yarn-error.log*
 
 # Coverage reports
 coverage/
+digest.txt

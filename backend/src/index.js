@@ -9,38 +9,29 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ======================
-// Middleware
-// ======================
 app.use(express.json());
 
-// CORS - Allow requests from our Flutter frontend (will run on various ports)
 app.use(cors({
   origin: true,
-  methods: ['GET', 'POST', 'PUT', 'HEAD'], // Allow requests from any origin during development
-  credentials: true // Allow cookies/session to be sent
+  methods: ['GET', 'POST', 'PUT', 'HEAD'], 
+  credentials: true 
 }));
 
-// Session configuration - REQUIRED for passport session support
 app.use(session({
-  secret: process.env.JWT_SECRET, // Using our JWT secret for session encryption
+  secret: process.env.JWT_SECRET, 
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false, // Set to true in production if using HTTPS
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    secure: false, 
+    maxAge: 24 * 60 * 60 * 1000, 
     sameSite: 'lax'
   }
 }));
 
-// Initialize Passport and session support
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ======================
-// Passport Configuration
-// ======================
 passport.use(new GitHubStrategy({
   clientID: process.env.GITHUB_CLIENT_ID,
   clientSecret: process.env.GITHUB_CLIENT_SECRET,
@@ -56,7 +47,6 @@ passport.use(new GitHubStrategy({
     const avatarUrl = profile.photos?.[0]?.value || null;
     const profileUrl = profile.profileUrl;
 
-    // Check if user already exists
     const existingUser = await db.query('SELECT * FROM users WHERE github_id = $1', [githubId]);
     
     if (existingUser.rows.length > 0) {
@@ -64,7 +54,6 @@ passport.use(new GitHubStrategy({
       return done(null, existingUser.rows[0]);
     }
 
-    // Create new user
     const newUser = await db.query(`
       INSERT INTO users (github_id, username, name, email, avatar_url, profile_url)
       VALUES ($1, $2, $3, $4, $5, $6)
@@ -79,12 +68,10 @@ passport.use(new GitHubStrategy({
   }
 }));
 
-// Serialize user into session
 passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
-// Deserialize user from session
 passport.deserializeUser(async (id, done) => {
   try {
     const result = await db.query('SELECT * FROM users WHERE id = $1', [id]);
@@ -94,15 +81,10 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// ======================
-// Routes
-// ======================
-// Health check (keep our existing test route)
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Server is up and running!' });
 });
 
-// Test DB connection (keep our existing test route)
 app.get('/api/test-db', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW() as current_time');
@@ -116,19 +98,23 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
-// GitHub authentication routes
 app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
 
 app.get('/auth/github/callback',
   passport.authenticate('github', { failureRedirect: '/' }),
   (req, res) => {
-    // Successful authentication, redirect to your Flutter app
-    // We'll change this later to work with Flutter
-    res.redirect('http://localhost:3001/api/health');
+    res.send(`
+      <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+          <h2>✅ Login Successful!</h2>
+          <p>You can close this window and return to the app.</p>
+          <p><small>Your session has been established.</small></p>
+        </body>
+      </html>
+    `);
   }
 );
 
-// Get current user
 app.get('/auth/user', (req, res) => {
   if (req.isAuthenticated()) {
     res.json(req.user);
@@ -137,7 +123,6 @@ app.get('/auth/user', (req, res) => {
   }
 });
 
-// Logout
 app.get('/auth/logout', (req, res) => {
   req.logout((err) => {
     if (err) {
@@ -148,9 +133,45 @@ app.get('/auth/logout', (req, res) => {
   });
 });
 
-// ======================
-// Start Server
-// ======================
+app.get('/auth/token', async (req, res) => {
+  if (req.isAuthenticated()) {
+    const token = require('crypto').randomBytes(16).toString('hex');
+    
+    await db.query(
+      'UPDATE users SET auth_token = $1 WHERE id = $2',
+      [token, req.user.id]
+    );
+    
+    res.json({ token: token });
+  } else {
+    res.status(401).json({ error: 'Not authenticated' });
+  }
+});
+
+app.get('/auth/verify-token', async (req, res) => {
+  const token = req.query.token;
+  
+  if (!token) {
+    return res.status(400).json({ error: 'Token required' });
+  }
+  
+  try {
+    const result = await db.query(
+      'SELECT * FROM users WHERE auth_token = $1',
+      [token]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Token verification error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`GitHub auth available at: http://localhost:${PORT}/auth/github`);
