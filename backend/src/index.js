@@ -1,9 +1,10 @@
 require('dotenv').config();
 const express = require('express');
-const session = require('express-session');
 const cors = require('cors');
 const passport = require('passport');
+const session = require('express-session'); // still needed for passport
 const GitHubStrategy = require('passport-github2').Strategy;
+const jwt = require('jsonwebtoken');
 const db = require('./db');
 
 const app = express();
@@ -13,18 +14,19 @@ app.use(express.json());
 
 app.use(cors({
   origin: true,
-  methods: ['GET', 'POST', 'PUT', 'HEAD'], 
-  credentials: true 
+  methods: ['GET', 'POST', 'PUT', 'HEAD'],
+  credentials: true
 }));
 
+// Passport still needs a session store for the GitHub OAuth handshake
 app.use(session({
-  secret: process.env.JWT_SECRET, 
+  secret: process.env.JWT_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false, 
-    maxAge: 24 * 60 * 60 * 1000, 
+    secure: false,
+    maxAge: 24 * 60 * 60 * 1000,
     sameSite: 'lax'
   }
 }));
@@ -32,14 +34,13 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// --- GitHub OAuth setup ---
 passport.use(new GitHubStrategy({
   clientID: process.env.GITHUB_CLIENT_ID,
   clientSecret: process.env.GITHUB_CLIENT_SECRET,
   callbackURL: "http://localhost:3001/auth/github/callback"
 }, async (accessToken, refreshToken, profile, done) => {
   try {
-    console.log('GitHub Profile:', profile);
-    
     const githubId = profile.id;
     const username = profile.username;
     const name = profile.displayName || username;
@@ -48,9 +49,7 @@ passport.use(new GitHubStrategy({
     const profileUrl = profile.profileUrl;
 
     const existingUser = await db.query('SELECT * FROM users WHERE github_id = $1', [githubId]);
-    
     if (existingUser.rows.length > 0) {
-      console.log('User exists:', existingUser.rows[0]);
       return done(null, existingUser.rows[0]);
     }
 
@@ -60,10 +59,8 @@ passport.use(new GitHubStrategy({
       RETURNING *
     `, [githubId, username, name, email, avatarUrl, profileUrl]);
 
-    console.log('New user created:', newUser.rows[0]);
     return done(null, newUser.rows[0]);
   } catch (err) {
-    console.error('Error in GitHub strategy:', err);
     return done(err);
   }
 }));
@@ -81,6 +78,26 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
+// --- JWT middleware ---
+function authenticateJWT(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.sendStatus(403);
+      }
+      req.user = user;
+      next();
+    });
+  } else {
+    res.sendStatus(401);
+  }
+}
+
+// --- Routes ---
+
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Server is up and running!' });
 });
@@ -88,12 +105,11 @@ app.get('/api/health', (req, res) => {
 app.get('/api/test-db', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW() as current_time');
-    res.json({ 
-      message: 'Database connection successful!', 
-      time: result.rows[0].current_time 
+    res.json({
+      message: 'Database connection successful!',
+      time: result.rows[0].current_time
     });
   } catch (err) {
-    console.error(err.message);
     res.status(500).json({ error: 'Database connection failed!' });
   }
 });
@@ -103,76 +119,47 @@ app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] 
 app.get('/auth/github/callback',
   passport.authenticate('github', { failureRedirect: '/' }),
   (req, res) => {
-    res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h2>✅ Login Successful!</h2>
-          <p>You can close this window and return to the app.</p>
-          <p><small>Your session has been established.</small></p>
-        </body>
-      </html>
-    `);
+    const token = jwt.sign(
+      { id: req.user.id, username: req.user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+    const redirectUrl = `myapp://callback?token=${token}`;
+    res.redirect(redirectUrl);
   }
 );
 
-app.get('/auth/user', (req, res) => {
-  if (req.isAuthenticated()) {
-    res.json(req.user);
-  } else {
-    res.status(401).json({ error: 'Not logged in' });
+// Example protected route
+app.get('/api/attendance', authenticateJWT, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM attendance WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch attendance' });
   }
 });
 
-app.get('/auth/logout', (req, res) => {
-  req.logout((err) => {
-    if (err) {
-      return res.status(500).json({ error: 'Logout failed' });
-    }
-    res.clearCookie('connect.sid'); // Clear the session cookie
-    res.json({ message: 'Logged out successfully' });
-  });
-});
-
-app.get('/auth/token', async (req, res) => {
-  if (req.isAuthenticated()) {
-    const token = require('crypto').randomBytes(16).toString('hex');
-    
-    await db.query(
-      'UPDATE users SET auth_token = $1 WHERE id = $2',
-      [token, req.user.id]
-    );
-    
-    res.json({ token: token });
-  } else {
-    res.status(401).json({ error: 'Not authenticated' });
-  }
-});
-
-app.get('/auth/verify-token', async (req, res) => {
-  const token = req.query.token;
-  
-  if (!token) {
-    return res.status(400).json({ error: 'Token required' });
-  }
-  
+// Get logged-in user info from JWT
+app.get('/auth/me', authenticateJWT, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT * FROM users WHERE auth_token = $1',
-      [token]
+      'SELECT id, username, name, email, avatar_url, profile_url FROM users WHERE id = $1',
+      [req.user.id]
     );
-    
+
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid token' });
+      return res.status(404).json({ error: 'User not found' });
     }
-    
+
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Token verification error:', err);
+    console.error('Error fetching user:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`GitHub auth available at: http://localhost:${PORT}/auth/github`);
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`🔗 GitHub login: http://localhost:${PORT}/auth/github`);
 });

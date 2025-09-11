@@ -1,6 +1,19 @@
 Directory structure:
 └── inlab/
+    ├── docker-compose.yml
     ├── .metadata
+    ├── backend/
+    │   ├── Dockerfile
+    │   ├── package.json
+    │   ├── db/
+    │   │   └── init.sql
+    │   └── src/
+    │       ├── db.js
+    │       ├── index.js
+    │       └── routes/
+    │           ├── attendance.js
+    │           ├── auth.js
+    │           └── user.js
     └── frontend/
         ├── README.md
         ├── analysis_options.yaml
@@ -127,6 +140,72 @@ Directory structure:
                 └── win32_window.h
 
 ================================================
+FILE: docker-compose.yml
+================================================
+version: '3.8'
+
+services:
+  # Our PostgreSQL Database Service
+  postgres:
+    image: postgres:15-alpine
+    container_name: inlab_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inlab_db
+      POSTGRES_USER: inlab_user
+      POSTGRES_PASSWORD: inlab_password
+    ports:
+      - "5432:5432" # Expose to host machine for external tools (optional)
+    volumes:
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - inlab_network
+    # Health check is good practice for services that depend on each other
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inlab_user -d inlab_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Our Node.js Backend API Service
+  api:
+    build: ./backend # Tells Compose to build the image using the Dockerfile in this path
+    container_name: inlab_api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # Update DB_HOST to use the service name! This is Docker's internal DNS.
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=inlab_db
+      - DB_USER=inlab_user
+      - DB_PASSWORD=inlab_password
+      - PORT=3001
+      - JWT_SECRET=inlab_super_secret_jwt_key_change_in_production_123!
+    ports:
+      - "3001:3001" # Map host port 3001 to container port 3001
+    depends_on:
+      postgres:
+        condition: service_healthy # Wait for the DB to be healthy before starting the app
+    #volumes:
+      # Optional: Mount the source code for development with live reload.
+      # For now, we'll use the built image. We can add this later for development.
+      # - ./backend/src:/app/src
+    networks:
+      - inlab_network
+    # Use nodemon for development instead of 'npm start'
+    # command: npm run dev
+
+volumes:
+  postgres_data:
+
+networks:
+  inlab_network:
+    driver: bridge
+
+
+================================================
 FILE: .metadata
 ================================================
 # This file tracks properties of this Flutter project.
@@ -175,6 +254,319 @@ migration:
     - 'lib/main.dart'
     - 'ios/Runner.xcodeproj/project.pbxproj'
 
+
+
+================================================
+FILE: backend/Dockerfile
+================================================
+# Use an official Node.js runtime as the base image
+FROM node:18-alpine
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy package.json and package-lock.json first (for optimal layer caching)
+COPY package*.json ./
+
+# Install all dependencies
+RUN npm install
+
+# Copy the rest of the application code
+COPY . .
+
+# Expose the port the app runs on
+EXPOSE 3001
+
+# Define the command to run the application
+CMD ["npm", "start"]
+
+
+================================================
+FILE: backend/package.json
+================================================
+{
+  "name": "inlab-backend",
+  "version": "1.0.0",
+  "description": "Backend for the InLab attendance app",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-session": "^1.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "passport": "^0.7.0",
+    "passport-github2": "^0.1.12",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
+
+
+
+================================================
+FILE: backend/db/init.sql
+================================================
+-- Create a table for storing user information
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    github_id INTEGER UNIQUE, -- Will store the unique ID provided by GitHub
+    username VARCHAR(255) NOT NULL UNIQUE,
+    email VARCHAR(255),
+    avatar_url VARCHAR(255),
+    profile_url TEXT,
+    name VARCHAR(255),
+    -- Auth fields for non-Github login (if needed later)
+    password_hash VARCHAR(255), 
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create a table for storing attendance records
+CREATE TABLE IF NOT EXISTS attendance (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- The lab or session identifier scanned from the QR code
+    lab_id VARCHAR(255) NOT NULL,
+    -- Timestamp of when the check-in was recorded
+    check_in_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Optional: Timestamp for check-out
+    check_out_time TIMESTAMP WITH TIME ZONE,
+    -- Optional: Additional metadata
+    notes TEXT,
+    -- Ensure a user can't have multiple active check-ins for the same lab without checking out
+    UNIQUE(user_id, lab_id, check_out_time)
+);
+
+-- Create an index to speed up queries looking for a user's attendance records
+CREATE INDEX IF NOT EXISTS idx_attendance_user_id ON attendance(user_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_lab_id ON attendance(lab_id);
+
+
+================================================
+FILE: backend/src/db.js
+================================================
+const { Pool } = require('pg');
+
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+});
+
+module.exports = {
+  query: (text, params) => pool.query(text, params),
+};
+
+
+================================================
+FILE: backend/src/index.js
+================================================
+require('dotenv').config();
+const express = require('express');
+const session = require('express-session');
+const cors = require('cors');
+const passport = require('passport');
+const GitHubStrategy = require('passport-github2').Strategy;
+const db = require('./db');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+app.use(express.json());
+
+app.use(cors({
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'HEAD'], 
+  credentials: true 
+}));
+
+app.use(session({
+  secret: process.env.JWT_SECRET, 
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: false, 
+    maxAge: 24 * 60 * 60 * 1000, 
+    sameSite: 'lax'
+  }
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.use(new GitHubStrategy({
+  clientID: process.env.GITHUB_CLIENT_ID,
+  clientSecret: process.env.GITHUB_CLIENT_SECRET,
+  callbackURL: "http://localhost:3001/auth/github/callback"
+}, async (accessToken, refreshToken, profile, done) => {
+  try {
+    console.log('GitHub Profile:', profile);
+    
+    const githubId = profile.id;
+    const username = profile.username;
+    const name = profile.displayName || username;
+    const email = profile.emails?.[0]?.value || null;
+    const avatarUrl = profile.photos?.[0]?.value || null;
+    const profileUrl = profile.profileUrl;
+
+    const existingUser = await db.query('SELECT * FROM users WHERE github_id = $1', [githubId]);
+    
+    if (existingUser.rows.length > 0) {
+      console.log('User exists:', existingUser.rows[0]);
+      return done(null, existingUser.rows[0]);
+    }
+
+    const newUser = await db.query(`
+      INSERT INTO users (github_id, username, name, email, avatar_url, profile_url)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [githubId, username, name, email, avatarUrl, profileUrl]);
+
+    console.log('New user created:', newUser.rows[0]);
+    return done(null, newUser.rows[0]);
+  } catch (err) {
+    console.error('Error in GitHub strategy:', err);
+    return done(err);
+  }
+}));
+
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+  try {
+    const result = await db.query('SELECT * FROM users WHERE id = $1', [id]);
+    done(null, result.rows[0]);
+  } catch (err) {
+    done(err);
+  }
+});
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'OK', message: 'Server is up and running!' });
+});
+
+app.get('/api/test-db', async (req, res) => {
+  try {
+    const result = await db.query('SELECT NOW() as current_time');
+    res.json({ 
+      message: 'Database connection successful!', 
+      time: result.rows[0].current_time 
+    });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: 'Database connection failed!' });
+  }
+});
+
+app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
+
+app.get('/auth/github/callback',
+  passport.authenticate('github', { failureRedirect: '/' }),
+  (req, res) => {
+    res.send(`
+      <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+          <h2>✅ Login Successful!</h2>
+          <p>You can close this window and return to the app.</p>
+          <p><small>Your session has been established.</small></p>
+        </body>
+      </html>
+    `);
+  }
+);
+
+app.get('/auth/user', (req, res) => {
+  if (req.isAuthenticated()) {
+    res.json(req.user);
+  } else {
+    res.status(401).json({ error: 'Not logged in' });
+  }
+});
+
+app.get('/auth/logout', (req, res) => {
+  req.logout((err) => {
+    if (err) {
+      return res.status(500).json({ error: 'Logout failed' });
+    }
+    res.clearCookie('connect.sid'); // Clear the session cookie
+    res.json({ message: 'Logged out successfully' });
+  });
+});
+
+app.get('/auth/token', async (req, res) => {
+  if (req.isAuthenticated()) {
+    const token = require('crypto').randomBytes(16).toString('hex');
+    
+    await db.query(
+      'UPDATE users SET auth_token = $1 WHERE id = $2',
+      [token, req.user.id]
+    );
+    
+    res.json({ token: token });
+  } else {
+    res.status(401).json({ error: 'Not authenticated' });
+  }
+});
+
+app.get('/auth/verify-token', async (req, res) => {
+  const token = req.query.token;
+  
+  if (!token) {
+    return res.status(400).json({ error: 'Token required' });
+  }
+  
+  try {
+    const result = await db.query(
+      'SELECT * FROM users WHERE auth_token = $1',
+      [token]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Token verification error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+  console.log(`GitHub auth available at: http://localhost:${PORT}/auth/github`);
+});
+
+
+================================================
+FILE: backend/src/routes/attendance.js
+================================================
+[Empty file]
+
+
+================================================
+FILE: backend/src/routes/auth.js
+================================================
+[Empty file]
+
+
+================================================
+FILE: backend/src/routes/user.js
+================================================
+[Empty file]
 
 
 ================================================
@@ -287,6 +679,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.8"
+  desktop_webview_window:
+    dependency: transitive
+    description:
+      name: desktop_webview_window
+      sha256: "57cf20d81689d5cbb1adfd0017e96b669398a669d927906073b0e42fc64111c0"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.3"
   fake_async:
     dependency: transitive
     description:
@@ -321,6 +721,22 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_web_auth_2:
+    dependency: "direct main"
+    description:
+      name: flutter_web_auth_2
+      sha256: "3c14babeaa066c371f3a743f204dd0d348b7d42ffa6fae7a9847a521aff33696"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.1.0"
+  flutter_web_auth_2_platform_interface:
+    dependency: transitive
+    description:
+      name: flutter_web_auth_2_platform_interface
+      sha256: c63a472c8070998e4e422f6b34a17070e60782ac442107c70000dd1bed645f4d
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.1.0"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
@@ -342,14 +758,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
-  js:
-    dependency: transitive
-    description:
-      name: js
-      sha256: f2c445dce49627136094980615a031419f7f3eb393237e4ecd97ac15dea343f3
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.6.7"
   leak_tracker:
     dependency: transitive
     description:
@@ -406,6 +814,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.16.0"
+  mobile_scanner:
+    dependency: "direct main"
+    description:
+      name: mobile_scanner
+      sha256: "54005bdea7052d792d35b4fef0f84ec5ddc3a844b250ecd48dc192fb9b4ebc95"
+      url: "https://pub.dev"
+    source: hosted
+    version: "7.0.1"
   path:
     dependency: transitive
     description:
@@ -478,14 +894,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.8"
-  qr_code_scanner:
-    dependency: "direct main"
-    description:
-      name: qr_code_scanner
-      sha256: f23b68d893505a424f0bd2e324ebea71ed88465d572d26bb8d2e78a4749591fd
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.0.1"
   sky_engine:
     dependency: transitive
     description: flutter
@@ -595,6 +1003,70 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.0"
+  url_launcher:
+    dependency: "direct main"
+    description:
+      name: url_launcher
+      sha256: f6a7e5c4835bb4e3026a04793a4199ca2d14c739ec378fdfe23fc8075d0439f8
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.3.2"
+  url_launcher_android:
+    dependency: transitive
+    description:
+      name: url_launcher_android
+      sha256: "69ee86740f2847b9a4ba6cffa74ed12ce500bbe2b07f3dc1e643439da60637b7"
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.3.18"
+  url_launcher_ios:
+    dependency: transitive
+    description:
+      name: url_launcher_ios
+      sha256: d80b3f567a617cb923546034cc94bfe44eb15f989fe670b37f26abdb9d939cb7
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.3.4"
+  url_launcher_linux:
+    dependency: transitive
+    description:
+      name: url_launcher_linux
+      sha256: "4e9ba368772369e3e08f231d2301b4ef72b9ff87c31192ef471b380ef29a4935"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.2.1"
+  url_launcher_macos:
+    dependency: transitive
+    description:
+      name: url_launcher_macos
+      sha256: c043a77d6600ac9c38300567f33ef12b0ef4f4783a2c1f00231d2b1941fea13f
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.2.3"
+  url_launcher_platform_interface:
+    dependency: transitive
+    description:
+      name: url_launcher_platform_interface
+      sha256: "552f8a1e663569be95a8190206a38187b531910283c3e982193e4f2733f01029"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.3.2"
+  url_launcher_web:
+    dependency: transitive
+    description:
+      name: url_launcher_web
+      sha256: "4bd2b7b4dc4d4d0b94e5babfffbca8eac1a126c7f3d6ecbc1a11013faa3abba2"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.4.1"
+  url_launcher_windows:
+    dependency: transitive
+    description:
+      name: url_launcher_windows
+      sha256: "3284b6d2ac454cf34f114e1d3319866fdd1e19cdc329999057e44ffe936cfa77"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.4"
   vector_math:
     dependency: transitive
     description:
@@ -619,6 +1091,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.1"
+  window_to_front:
+    dependency: transitive
+    description:
+      name: window_to_front
+      sha256: "7aef379752b7190c10479e12b5fd7c0b9d92adc96817d9e96c59937929512aee"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.3"
   xdg_directories:
     dependency: transitive
     description:
@@ -669,10 +1149,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  qr_code_scanner: ^1.0.0
+  mobile_scanner: ^7.0.1
   sqflite: ^2.0.0+4
   path_provider: ^2.0.15
   http: ^1.1.0
+  url_launcher: ^6.1.11  # For opening the browser
+  flutter_web_auth_2: ^4.1.0  # For handling the OAuth callback
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -897,7 +1379,7 @@ FILE: frontend/android/app/src/main/AndroidManifest.xml
         android:label="inlab"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true"> <!-- Add this for HTTP -->
+        android:usesCleartextTraffic="true">
         
         <activity
             android:name=".MainActivity"
@@ -913,13 +1395,21 @@ FILE: frontend/android/app/src/main/AndroidManifest.xml
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- Add the OAuth intent filter INSIDE the activity -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="myapp" />
+            </intent-filter>
         </activity>
         
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-</manifest> 
+</manifest>
 
 
 ================================================
@@ -943,19 +1433,29 @@ public final class GeneratedPluginRegistrant {
   private static final String TAG = "GeneratedPluginRegistrant";
   public static void registerWith(@NonNull FlutterEngine flutterEngine) {
     try {
+      flutterEngine.getPlugins().add(new com.linusu.flutter_web_auth_2.FlutterWebAuth2Plugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin flutter_web_auth_2, com.linusu.flutter_web_auth_2.FlutterWebAuth2Plugin", e);
+    }
+    try {
+      flutterEngine.getPlugins().add(new dev.steenbakker.mobile_scanner.MobileScannerPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin mobile_scanner, dev.steenbakker.mobile_scanner.MobileScannerPlugin", e);
+    }
+    try {
       flutterEngine.getPlugins().add(new io.flutter.plugins.pathprovider.PathProviderPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin path_provider_android, io.flutter.plugins.pathprovider.PathProviderPlugin", e);
     }
     try {
-      flutterEngine.getPlugins().add(new net.touchcapture.qr.flutterqr.FlutterQrPlugin());
-    } catch (Exception e) {
-      Log.e(TAG, "Error registering plugin qr_code_scanner, net.touchcapture.qr.flutterqr.FlutterQrPlugin", e);
-    }
-    try {
       flutterEngine.getPlugins().add(new com.tekartik.sqflite.SqflitePlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin sqflite_android, com.tekartik.sqflite.SqflitePlugin", e);
+    }
+    try {
+      flutterEngine.getPlugins().add(new io.flutter.plugins.urllauncher.UrlLauncherPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin url_launcher_android, io.flutter.plugins.urllauncher.UrlLauncherPlugin", e);
     }
   }
 }
@@ -1514,26 +2014,133 @@ class HomeScreen extends StatelessWidget {
 FILE: frontend/lib/login_screen.dart
 ================================================
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'dart:convert'; // This is for the 'json' decoder
 
-class LoginScreen extends StatelessWidget {
+class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  bool _isLoading = false;
+  bool _waitingForAuth = false;
+
+  Future<void> _loginWithGitHub() async {
+    setState(() {
+      _isLoading = true;
+      _waitingForAuth = true;
+    });
+
+    try {
+      final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+      final authorizationUrl = '$baseUrl/auth/github';
+      
+      // Open the GitHub login page in the browser
+      if (await canLaunchUrl(Uri.parse(authorizationUrl))) {
+        await launchUrl(Uri.parse(authorizationUrl));
+        
+        // Start polling to check if user is authenticated
+        _startAuthPolling();
+      }
+    } catch (e) {
+      print('Error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+      setState(() {
+        _isLoading = false;
+        _waitingForAuth = false;
+      });
+    }
+  }
+
+  void _startAuthPolling() {
+    print('Starting auth polling...');
+    Future.delayed(Duration(seconds: 2), () async {
+      if (!context.mounted || !_waitingForAuth) {
+        print('Polling stopped');
+        return;
+      }
+      
+      try {
+        print('Checking auth status...');
+        final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+        
+        // Try to get a token first
+        final tokenResponse = await http.get(
+          Uri.parse('$baseUrl/auth/token'),
+          headers: {'Accept': 'application/json'},
+        );
+        
+        if (tokenResponse.statusCode == 200) {
+          final tokenData = json.decode(tokenResponse.body);
+          final token = tokenData['token'];
+          
+          // Store the token for future requests
+          // You might want to use shared_preferences for this
+          print('Got token: $token');
+          
+          // Verify the token
+          final verifyResponse = await http.get(
+            Uri.parse('$baseUrl/auth/verify-token?token=$token'),
+            headers: {'Accept': 'application/json'},
+          );
+          
+          if (verifyResponse.statusCode == 200) {
+            final user = json.decode(verifyResponse.body);
+            print('User authenticated: ${user['username']}');
+            
+            // Navigate to home screen
+            Navigator.pushReplacementNamed(context, '/home');
+            return;
+          }
+        }
+        
+        // If we get here, keep polling
+        print('Not authenticated yet, continuing polling...');
+        _startAuthPolling();
+      } catch (e) {
+        print('Polling error: $e');
+        // Keep polling even if there's an error
+        _startAuthPolling();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _waitingForAuth = false; // Stop polling when screen is disposed
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        child: ElevatedButton(
-          onPressed: () {
-            // TODO: add GitHub login later
-            Navigator.pushReplacementNamed(context, '/home'); // for now just navigate
-          },
-          child: const Text('Login with GitHub'),
-        ),
+        child: _isLoading
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 20),
+                  Text('Complete login in your browser...'),
+                  SizedBox(height: 10),
+                  Text('Then return to this app', style: TextStyle(fontSize: 12)),
+                ],
+              )
+            : ElevatedButton(
+                onPressed: _isLoading ? null : _loginWithGitHub,
+                child: const Text('Login with GitHub'),
+              ),
       ),
     );
   }
 }
-
 
 
 ================================================
@@ -1568,7 +2175,7 @@ class InLabApp extends StatelessWidget {
 FILE: frontend/lib/qr_scan_screen.dart
 ================================================
 import 'package:flutter/material.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class QRScanScreen extends StatefulWidget {
   const QRScanScreen({super.key});
@@ -1578,27 +2185,63 @@ class QRScanScreen extends StatefulWidget {
 }
 
 class _QRScanScreenState extends State<QRScanScreen> {
-  final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
-  QRViewController? controller;
+  MobileScannerController cameraController = MobileScannerController();
   String scannedData = "";
+  bool _isTorchOn = false;
+  CameraFacing _cameraFacing = CameraFacing.back;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan QR Code')),
+      appBar: AppBar(
+        title: const Text('Scan QR Code'),
+        actions: [
+          IconButton(
+            color: Colors.white,
+            icon: Icon(_isTorchOn ? Icons.flash_on : Icons.flash_off),
+            onPressed: () async {
+              setState(() {
+                _isTorchOn = !_isTorchOn;
+              });
+              await cameraController.toggleTorch();
+            },
+          ),
+          IconButton(
+            color: Colors.white,
+            icon: Icon(_cameraFacing == CameraFacing.back 
+                ? Icons.camera_rear 
+                : Icons.camera_front),
+            onPressed: () async {
+              setState(() {
+                _cameraFacing = _cameraFacing == CameraFacing.back
+                    ? CameraFacing.front
+                    : CameraFacing.back;
+              });
+              await cameraController.switchCamera();
+            },
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
             flex: 5,
-            child: QRView(
-              key: qrKey,
-              onQRViewCreated: _onQRViewCreated,
+            child: MobileScanner(
+              controller: cameraController,
+              onDetect: (capture) {
+                final List<Barcode> barcodes = capture.barcodes;
+                for (final barcode in barcodes) {
+                  setState(() {
+                    scannedData = barcode.rawValue ?? "";
+                  });
+                }
+              },
             ),
           ),
           Expanded(
-            flex:1,
-            child:Center(
-              child:Text(
+            flex: 1,
+            child: Center(
+              child: Text(
                 scannedData.isEmpty ? 'Scan a QR code' : 'Scanned: $scannedData',
                 style: const TextStyle(fontSize: 18),
               ),
@@ -1609,22 +2252,12 @@ class _QRScanScreenState extends State<QRScanScreen> {
     );
   }
 
-  void _onQRViewCreated(QRViewController controller){
-    this.controller = controller;
-    controller.scannedDataStream.listen((scanData){
-      setState(() {
-        scannedData = scanData.code ?? "";
-      });
-    });
-  }
-
   @override
-  void dispose(){
-    controller?.dispose();
+  void dispose() {
+    cameraController.dispose();
     super.dispose();
   }
 }
-
 
 
 ================================================
@@ -1866,8 +2499,20 @@ FILE: frontend/linux/flutter/generated_plugin_registrant.cc
 
 #include "generated_plugin_registrant.h"
 
+#include <desktop_webview_window/desktop_webview_window_plugin.h>
+#include <url_launcher_linux/url_launcher_plugin.h>
+#include <window_to_front/window_to_front_plugin.h>
 
 void fl_register_plugins(FlPluginRegistry* registry) {
+  g_autoptr(FlPluginRegistrar) desktop_webview_window_registrar =
+      fl_plugin_registry_get_registrar_for_plugin(registry, "DesktopWebviewWindowPlugin");
+  desktop_webview_window_plugin_register_with_registrar(desktop_webview_window_registrar);
+  g_autoptr(FlPluginRegistrar) url_launcher_linux_registrar =
+      fl_plugin_registry_get_registrar_for_plugin(registry, "UrlLauncherPlugin");
+  url_launcher_plugin_register_with_registrar(url_launcher_linux_registrar);
+  g_autoptr(FlPluginRegistrar) window_to_front_registrar =
+      fl_plugin_registry_get_registrar_for_plugin(registry, "WindowToFrontPlugin");
+  window_to_front_plugin_register_with_registrar(window_to_front_registrar);
 }
 
 
@@ -1901,6 +2546,9 @@ FILE: frontend/linux/flutter/generated_plugins.cmake
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  desktop_webview_window
+  url_launcher_linux
+  window_to_front
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
@@ -2164,12 +2812,22 @@ FILE: frontend/macos/Flutter/GeneratedPluginRegistrant.swift
 import FlutterMacOS
 import Foundation
 
+import desktop_webview_window
+import flutter_web_auth_2
+import mobile_scanner
 import path_provider_foundation
 import sqflite_darwin
+import url_launcher_macos
+import window_to_front
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
+  DesktopWebviewWindowPlugin.register(with: registry.registrar(forPlugin: "DesktopWebviewWindowPlugin"))
+  FlutterWebAuth2Plugin.register(with: registry.registrar(forPlugin: "FlutterWebAuth2Plugin"))
+  MobileScannerPlugin.register(with: registry.registrar(forPlugin: "MobileScannerPlugin"))
   PathProviderPlugin.register(with: registry.registrar(forPlugin: "PathProviderPlugin"))
   SqflitePlugin.register(with: registry.registrar(forPlugin: "SqflitePlugin"))
+  UrlLauncherPlugin.register(with: registry.registrar(forPlugin: "UrlLauncherPlugin"))
+  WindowToFrontPlugin.register(with: registry.registrar(forPlugin: "WindowToFrontPlugin"))
 }
 
 
@@ -3141,8 +3799,17 @@ FILE: frontend/windows/flutter/generated_plugin_registrant.cc
 
 #include "generated_plugin_registrant.h"
 
+#include <desktop_webview_window/desktop_webview_window_plugin.h>
+#include <url_launcher_windows/url_launcher_windows.h>
+#include <window_to_front/window_to_front_plugin.h>
 
 void RegisterPlugins(flutter::PluginRegistry* registry) {
+  DesktopWebviewWindowPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("DesktopWebviewWindowPlugin"));
+  UrlLauncherWindowsRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("UrlLauncherWindows"));
+  WindowToFrontPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("WindowToFrontPlugin"));
 }
 
 
@@ -3176,6 +3843,9 @@ FILE: frontend/windows/flutter/generated_plugins.cmake
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  desktop_webview_window
+  url_launcher_windows
+  window_to_front
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
