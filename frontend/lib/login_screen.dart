@@ -3,6 +3,7 @@ import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http; // ADD THIS IMPORT
 import 'dart:io';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -19,39 +20,26 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+      final authUrl = "$baseUrl/auth/github";
       
-      print("Starting OAuth with URL: $baseUrl/auth/github");
-      print("Callback scheme: myapp");
-
-      final result = await FlutterWebAuth2.authenticate(
-        url: "$baseUrl/auth/github",
-        callbackUrlScheme: "myapp",
-        options: const FlutterWebAuth2Options(
-          preferEphemeral: false,
-        ),
-      ).timeout(Duration(seconds: 60), onTimeout: () {
-        throw Exception('OAuth timeout');
-      });
-
-      print("SUCCESS! Callback result: $result");
+      print("Opening: $authUrl");
       
-      // ... rest of your token handling code
-      
-    } on PlatformException catch (e) {
-      print("PlatformException DETAILS:");
-      print("Code: ${e.code}");
-      print("Message: ${e.message}");
-      print("Details: ${e.details}");
-      
-      if (e.code == 'CANCELED') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login canceled - check deep link configuration')),
+      if (await canLaunchUrl(Uri.parse(authUrl))) {
+        await launchUrl(
+          Uri.parse(authUrl),
+          mode: LaunchMode.externalApplication,
         );
+      } else {
+        throw Exception('Could not launch $authUrl');
       }
+      
     } catch (e) {
-      print("General error: $e");
+      print("Error launching browser: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to open browser: $e")),
+      );
     } finally {
-      setState(() => _isLoading = false);
+      // Don't set loading to false here - we're waiting for the deep link
     }
   }
 
