@@ -38,7 +38,7 @@ app.use(passport.session());
 passport.use(new GitHubStrategy({
   clientID: process.env.GITHUB_CLIENT_ID,
   clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  callbackURL: "http://10.0.2.2:3001/auth/github/callback"
+  callbackURL: "http://192.168.1.8:3001/auth/github/callback"
 }, async (accessToken, refreshToken, profile, done) => {
   try {
     const githubId = profile.id;

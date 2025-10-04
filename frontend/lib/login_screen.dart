@@ -19,7 +19,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+      final baseUrl = Platform.isAndroid ? 'http://192.168.1.8:3001' : 'http://localhost:3001';
       final authUrl = "$baseUrl/auth/github";
       
       print("Opening: $authUrl");
