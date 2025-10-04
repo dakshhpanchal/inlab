@@ -38,7 +38,7 @@ app.use(passport.session());
 passport.use(new GitHubStrategy({
   clientID: process.env.GITHUB_CLIENT_ID,
   clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  callbackURL: "http://localhost:3001/auth/github/callback"
+  callbackURL: "http://10.0.2.2:3001/auth/github/callback"
 }, async (accessToken, refreshToken, profile, done) => {
   try {
     const githubId = profile.id;
@@ -124,7 +124,8 @@ app.get('/auth/github/callback',
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
-    const redirectUrl = `myapp://callback?token=${token}`;
+    const redirectUrl = `myapp://login?token=${encodeURIComponent(token)}`;
+    console.log('Redirecting to:', redirectUrl); // Debug log
     res.redirect(redirectUrl);
   }
 );
@@ -161,5 +162,5 @@ app.get('/auth/me', authenticateJWT, async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🔗 GitHub login: http://localhost:${PORT}/auth/github`);
+  // console.log(`🔗 GitHub login: http://localhost:${PORT}/auth/github`);
 });

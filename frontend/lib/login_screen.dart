@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
+import 'package:http/http.dart' as http; // ADD THIS IMPORT
 import 'dart:io';
+import 'package:flutter/services.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,33 +18,40 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final baseUrl =
-          Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+      final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+      
+      print("Starting OAuth with URL: $baseUrl/auth/github");
+      print("Callback scheme: myapp");
 
-      // Start GitHub OAuth login flow
       final result = await FlutterWebAuth2.authenticate(
         url: "$baseUrl/auth/github",
         callbackUrlScheme: "myapp",
-      );
+        options: const FlutterWebAuth2Options(
+          preferEphemeral: false,
+        ),
+      ).timeout(Duration(seconds: 60), onTimeout: () {
+        throw Exception('OAuth timeout');
+      });
 
-      // Extract token from redirect URL
-      final token = Uri.parse(result).queryParameters['token'];
-      print("Got JWT: $token");
-
-      if (token != null) {
-        // Save token securely (SharedPreferences / secure storage)
-        // For now, just navigate
-        Navigator.pushReplacementNamed(context, '/home');
-      } else {
-        throw Exception("No token received");
+      print("SUCCESS! Callback result: $result");
+      
+      // ... rest of your token handling code
+      
+    } on PlatformException catch (e) {
+      print("PlatformException DETAILS:");
+      print("Code: ${e.code}");
+      print("Message: ${e.message}");
+      print("Details: ${e.details}");
+      
+      if (e.code == 'CANCELED') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Login canceled - check deep link configuration')),
+        );
       }
     } catch (e) {
-      print("Login error: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Login failed: $e")),
-      );
+      print("General error: $e");
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      setState(() => _isLoading = false);
     }
   }
 

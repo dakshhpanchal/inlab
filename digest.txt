@@ -373,10 +373,11 @@ FILE: backend/src/index.js
 ================================================
 require('dotenv').config();
 const express = require('express');
-const session = require('express-session');
 const cors = require('cors');
 const passport = require('passport');
+const session = require('express-session'); // still needed for passport
 const GitHubStrategy = require('passport-github2').Strategy;
+const jwt = require('jsonwebtoken');
 const db = require('./db');
 
 const app = express();
@@ -386,18 +387,19 @@ app.use(express.json());
 
 app.use(cors({
   origin: true,
-  methods: ['GET', 'POST', 'PUT', 'HEAD'], 
-  credentials: true 
+  methods: ['GET', 'POST', 'PUT', 'HEAD'],
+  credentials: true
 }));
 
+// Passport still needs a session store for the GitHub OAuth handshake
 app.use(session({
-  secret: process.env.JWT_SECRET, 
+  secret: process.env.JWT_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false, 
-    maxAge: 24 * 60 * 60 * 1000, 
+    secure: false,
+    maxAge: 24 * 60 * 60 * 1000,
     sameSite: 'lax'
   }
 }));
@@ -405,14 +407,13 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// --- GitHub OAuth setup ---
 passport.use(new GitHubStrategy({
   clientID: process.env.GITHUB_CLIENT_ID,
   clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  callbackURL: "http://localhost:3001/auth/github/callback"
+  callbackURL: "http://10.0.2.2:3001/auth/github/callback"
 }, async (accessToken, refreshToken, profile, done) => {
   try {
-    console.log('GitHub Profile:', profile);
-    
     const githubId = profile.id;
     const username = profile.username;
     const name = profile.displayName || username;
@@ -421,9 +422,7 @@ passport.use(new GitHubStrategy({
     const profileUrl = profile.profileUrl;
 
     const existingUser = await db.query('SELECT * FROM users WHERE github_id = $1', [githubId]);
-    
     if (existingUser.rows.length > 0) {
-      console.log('User exists:', existingUser.rows[0]);
       return done(null, existingUser.rows[0]);
     }
 
@@ -433,10 +432,8 @@ passport.use(new GitHubStrategy({
       RETURNING *
     `, [githubId, username, name, email, avatarUrl, profileUrl]);
 
-    console.log('New user created:', newUser.rows[0]);
     return done(null, newUser.rows[0]);
   } catch (err) {
-    console.error('Error in GitHub strategy:', err);
     return done(err);
   }
 }));
@@ -454,6 +451,26 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
+// --- JWT middleware ---
+function authenticateJWT(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.sendStatus(403);
+      }
+      req.user = user;
+      next();
+    });
+  } else {
+    res.sendStatus(401);
+  }
+}
+
+// --- Routes ---
+
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Server is up and running!' });
 });
@@ -461,12 +478,11 @@ app.get('/api/health', (req, res) => {
 app.get('/api/test-db', async (req, res) => {
   try {
     const result = await db.query('SELECT NOW() as current_time');
-    res.json({ 
-      message: 'Database connection successful!', 
-      time: result.rows[0].current_time 
+    res.json({
+      message: 'Database connection successful!',
+      time: result.rows[0].current_time
     });
   } catch (err) {
-    console.error(err.message);
     res.status(500).json({ error: 'Database connection failed!' });
   }
 });
@@ -476,79 +492,52 @@ app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] 
 app.get('/auth/github/callback',
   passport.authenticate('github', { failureRedirect: '/' }),
   (req, res) => {
-    res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h2>✅ Login Successful!</h2>
-          <p>You can close this window and return to the app.</p>
-          <p><small>Your session has been established.</small></p>
-        </body>
-      </html>
-    `);
+    const token = jwt.sign(
+      { id: req.user.id, username: req.user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+    const redirectUrl = `myapp://login?token=${encodeURIComponent(token)}`;
+    console.log('Redirecting to:', redirectUrl); // Debug log
+    res.redirect(redirectUrl);
   }
 );
 
-app.get('/auth/user', (req, res) => {
-  if (req.isAuthenticated()) {
-    res.json(req.user);
-  } else {
-    res.status(401).json({ error: 'Not logged in' });
+// Example protected route
+app.get('/api/attendance', authenticateJWT, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM attendance WHERE user_id = $1', [req.user.id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch attendance' });
   }
 });
 
-app.get('/auth/logout', (req, res) => {
-  req.logout((err) => {
-    if (err) {
-      return res.status(500).json({ error: 'Logout failed' });
-    }
-    res.clearCookie('connect.sid'); // Clear the session cookie
-    res.json({ message: 'Logged out successfully' });
-  });
-});
-
-app.get('/auth/token', async (req, res) => {
-  if (req.isAuthenticated()) {
-    const token = require('crypto').randomBytes(16).toString('hex');
-    
-    await db.query(
-      'UPDATE users SET auth_token = $1 WHERE id = $2',
-      [token, req.user.id]
-    );
-    
-    res.json({ token: token });
-  } else {
-    res.status(401).json({ error: 'Not authenticated' });
-  }
-});
-
-app.get('/auth/verify-token', async (req, res) => {
-  const token = req.query.token;
-  
-  if (!token) {
-    return res.status(400).json({ error: 'Token required' });
-  }
-  
+// Get logged-in user info from JWT
+app.get('/auth/me', authenticateJWT, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT * FROM users WHERE auth_token = $1',
-      [token]
+      'SELECT id, username, name, email, avatar_url, profile_url FROM users WHERE id = $1',
+      [req.user.id]
     );
-    
+
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid token' });
+      return res.status(404).json({ error: 'User not found' });
     }
-    
+
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Token verification error:', err);
+    console.error('Error fetching user:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`GitHub auth available at: http://localhost:${PORT}/auth/github`);
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`🔗 GitHub login: http://localhost:${PORT}/auth/github`);
 });
+
 
 
 ================================================
@@ -2014,10 +2003,8 @@ class HomeScreen extends StatelessWidget {
 FILE: frontend/lib/login_screen.dart
 ================================================
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'dart:io';
-import 'package:http/http.dart' as http;
-import 'dart:convert'; // This is for the 'json' decoder
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -2028,94 +2015,39 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
-  bool _waitingForAuth = false;
 
   Future<void> _loginWithGitHub() async {
-    setState(() {
-      _isLoading = true;
-      _waitingForAuth = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
-      final authorizationUrl = '$baseUrl/auth/github';
-      
-      // Open the GitHub login page in the browser
-      if (await canLaunchUrl(Uri.parse(authorizationUrl))) {
-        await launchUrl(Uri.parse(authorizationUrl));
-        
-        // Start polling to check if user is authenticated
-        _startAuthPolling();
+      final baseUrl =
+          Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
+
+      // Start GitHub OAuth login flow
+      final result = await FlutterWebAuth2.authenticate(
+        url: "http://10.0.2.2:3001/auth/github",
+        callbackUrlScheme: "myapp",
+      );
+
+      // Extract token from redirect URL
+      final token = Uri.parse(result).queryParameters['token'];
+      print("Got JWT: $token");
+
+      if (token != null) {
+        // Save token securely (SharedPreferences / secure storage)
+        // For now, just navigate
+        Navigator.pushReplacementNamed(context, '/home');
+      } else {
+        throw Exception("No token received");
       }
     } catch (e) {
-      print('Error: $e');
+      print("Login error: $e");
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
+        SnackBar(content: Text("Login failed: $e")),
       );
-      setState(() {
-        _isLoading = false;
-        _waitingForAuth = false;
-      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  void _startAuthPolling() {
-    print('Starting auth polling...');
-    Future.delayed(Duration(seconds: 2), () async {
-      if (!context.mounted || !_waitingForAuth) {
-        print('Polling stopped');
-        return;
-      }
-      
-      try {
-        print('Checking auth status...');
-        final baseUrl = Platform.isAndroid ? 'http://10.0.2.2:3001' : 'http://localhost:3001';
-        
-        // Try to get a token first
-        final tokenResponse = await http.get(
-          Uri.parse('$baseUrl/auth/token'),
-          headers: {'Accept': 'application/json'},
-        );
-        
-        if (tokenResponse.statusCode == 200) {
-          final tokenData = json.decode(tokenResponse.body);
-          final token = tokenData['token'];
-          
-          // Store the token for future requests
-          // You might want to use shared_preferences for this
-          print('Got token: $token');
-          
-          // Verify the token
-          final verifyResponse = await http.get(
-            Uri.parse('$baseUrl/auth/verify-token?token=$token'),
-            headers: {'Accept': 'application/json'},
-          );
-          
-          if (verifyResponse.statusCode == 200) {
-            final user = json.decode(verifyResponse.body);
-            print('User authenticated: ${user['username']}');
-            
-            // Navigate to home screen
-            Navigator.pushReplacementNamed(context, '/home');
-            return;
-          }
-        }
-        
-        // If we get here, keep polling
-        print('Not authenticated yet, continuing polling...');
-        _startAuthPolling();
-      } catch (e) {
-        print('Polling error: $e');
-        // Keep polling even if there's an error
-        _startAuthPolling();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _waitingForAuth = false; // Stop polling when screen is disposed
-    super.dispose();
   }
 
   @override
@@ -2125,22 +2057,21 @@ class _LoginScreenState extends State<LoginScreen> {
         child: _isLoading
             ? Column(
                 mainAxisAlignment: MainAxisAlignment.center,
-                children: [
+                children: const [
                   CircularProgressIndicator(),
                   SizedBox(height: 20),
-                  Text('Complete login in your browser...'),
-                  SizedBox(height: 10),
-                  Text('Then return to this app', style: TextStyle(fontSize: 12)),
+                  Text('Complete login in GitHub...'),
                 ],
               )
             : ElevatedButton(
-                onPressed: _isLoading ? null : _loginWithGitHub,
+                onPressed: _loginWithGitHub,
                 child: const Text('Login with GitHub'),
               ),
       ),
     );
   }
 }
+
 
 
 ================================================
