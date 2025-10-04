@@ -21,7 +21,6 @@ class _InLabAppState extends State<InLabApp> {
   }
 
   void _initDeepLinking() {
-    // Set up a method channel to handle deep links
     const platform = MethodChannel('com.example.inlab/deeplink');
     
     platform.setMethodCallHandler((call) async {
@@ -38,7 +37,6 @@ class _InLabAppState extends State<InLabApp> {
           });
           print("Token received via deep link: ${token.substring(0, 20)}...");
           
-          // Navigate to home screen
           if (Navigator.of(context).canPop()) {
             Navigator.of(context).pop();
           }

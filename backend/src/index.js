@@ -159,6 +159,111 @@ app.get('/auth/me', authenticateJWT, async (req, res) => {
   }
 });
 
+app.post('/api/attendance/check-in', authenticateJWT, async (req, res) => {
+  try {
+    const { lab_id, notes } = req.body;
+    const user_id = req.user.id;
+
+    if (!lab_id) {
+      return res.status(400).json({ error: 'Lab ID is required' });
+    }
+
+    // Check if user already has an active check-in for this lab
+    const existingCheckIn = await db.query(
+      'SELECT * FROM attendance WHERE user_id = $1 AND lab_id = $2 AND check_out_time IS NULL',
+      [user_id, lab_id]
+    );
+
+    if (existingCheckIn.rows.length > 0) {
+      return res.status(400).json({ 
+        error: 'You already have an active check-in for this lab',
+        attendance: existingCheckIn.rows[0]
+      });
+    }
+
+    // Create new check-in
+    const result = await db.query(
+      'INSERT INTO attendance (user_id, lab_id, notes, check_in_time) VALUES ($1, $2, $3, NOW()) RETURNING *',
+      [user_id, lab_id, notes || null]
+    );
+
+    res.status(201).json({
+      message: 'Check-in successful',
+      attendance: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error('Error recording attendance:', err);
+    res.status(500).json({ error: 'Failed to record attendance' });
+  }
+});
+
+// Check out from lab
+// Unified check-in/check-out endpoint
+app.post('/api/attendance/toggle', authenticateJWT, async (req, res) => {
+  try {
+    const { lab_id, notes } = req.body;
+    const user_id = req.user.id;
+
+    if (!lab_id) {
+      return res.status(400).json({ error: 'Lab ID is required' });
+    }
+
+    // Check if user has an active check-in for this lab
+    const activeCheckIn = await db.query(
+      'SELECT * FROM attendance WHERE user_id = $1 AND lab_id = $2 AND check_out_time IS NULL',
+      [user_id, lab_id]
+    );
+
+    if (activeCheckIn.rows.length > 0) {
+      // User has active check-in → Check out
+      const result = await db.query(
+        'UPDATE attendance SET check_out_time = NOW(), notes = COALESCE($3, notes) WHERE user_id = $1 AND lab_id = $2 AND check_out_time IS NULL RETURNING *',
+        [user_id, lab_id, notes]
+      );
+
+      res.json({
+        action: 'check_out',
+        message: 'Check-out successful',
+        attendance: result.rows[0],
+        duration: calculateDuration(result.rows[0].check_in_time, result.rows[0].check_out_time)
+      });
+
+    } else {
+      // No active check-in → Check in
+      const result = await db.query(
+        'INSERT INTO attendance (user_id, lab_id, notes, check_in_time) VALUES ($1, $2, $3, NOW()) RETURNING *',
+        [user_id, lab_id, notes || null]
+      );
+
+      res.status(201).json({
+        action: 'check_in',
+        message: 'Check-in successful',
+        attendance: result.rows[0]
+      });
+    }
+
+  } catch (err) {
+    console.error('Error toggling attendance:', err);
+    res.status(500).json({ error: 'Failed to process attendance' });
+  }
+});
+
+// Helper function to calculate duration
+function calculateDuration(checkIn, checkOut) {
+  const start = new Date(checkIn);
+  const end = new Date(checkOut);
+  const duration = end - start;
+  
+  const hours = Math.floor(duration / (1000 * 60 * 60));
+  const minutes = Math.floor((duration % (1000 * 60 * 60)) / (1000 * 60));
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  } else {
+    return `${minutes}m`;
+  }
+}
 
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);

@@ -1,6 +1,20 @@
 version: '3.8'
 
 services:
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: inlab_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@inlab.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8080:80"
+    networks:
+      - inlab_network
+    depends_on:
+      - postgres
   # Our PostgreSQL Database Service
   postgres:
     image: postgres:15-alpine

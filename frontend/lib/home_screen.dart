@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'qr_scan_screen.dart';
+import 'attendance_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String token;
@@ -96,7 +97,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   if (userData != null) ...[
-                    Text('Welcome, ${userData!['username']}!',
+                    Text('Welcome, ${userData!['name']}!',
                         style: const TextStyle(fontSize: 20)),
                     const SizedBox(height: 20),
                   ],
@@ -104,22 +105,24 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => const QRScanScreen()),
+                        MaterialPageRoute(
+                          builder: (context) => QRScanScreen(token: widget.token),
+                        ),
                       );
                     },
-                    child: const Text('Scan QR'),
+                    child: const Text('Scan QR to Check In/Out'),
                   ),
                   const SizedBox(height: 20),
                   ElevatedButton(
                     onPressed: () {
-                      // TODO: View Attendance
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => AttendanceScreen(token: widget.token),
+                        ),
+                      );
                     },
                     child: const Text('View Attendance'),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton(
-                    onPressed: _fetchUserData,
-                    child: const Text('Refresh User Data'),
                   ),
                 ],
               ),
