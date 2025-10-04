@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'login_screen.dart';
 import 'home_screen.dart';
 import 'package:flutter/services.dart';
@@ -49,29 +48,14 @@ class _InLabAppState extends State<InLabApp> {
     });
   }
 
-  void _handleDeepLink(String url) {
-    print("Handling deep link: $url");
-    
-    final uri = Uri.parse(url);
-    final token = uri.queryParameters['token'];
-    
-    if (token != null && token.isNotEmpty) {
-      setState(() {
-        _token = token;
-      });
-      print("Token received: ${token.substring(0, 20)}...");
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'InLab',
       theme: ThemeData(primarySwatch: Colors.indigo),
-      // If we have a token, go to home screen, otherwise login
-      home: _token != null ? const HomeScreen() : const LoginScreen(),
+      home: _token != null ? HomeScreen(token: _token!) : const LoginScreen(),
       routes: {
-        '/home': (context) => const HomeScreen(),
+        '/home': (context) => HomeScreen(token: _token!),
       },
     );
   }
